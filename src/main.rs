@@ -1,3 +1,4 @@
+mod atlas;
 mod entities;
 mod light;
 mod player;
@@ -652,6 +653,58 @@ fn dump_frame(seed: u32, path: &str, clock: Option<f32>, at_x: Option<f32>) {
     println!("wrote {} ({}x{} internal, {}x{} window) seed {}", path, iw, ih, out_w, out_h, seed);
 }
 
+/// Render the raw texture atlas, magnified, so art can be inspected directly.
+fn dump_atlas(path: &str) {
+    use crate::atlas::{draw_tile, Neighbours, VARIANTS};
+    const NT: usize = 18;
+    let tiles = [
+        Tile::Dirt, Tile::Grass, Tile::Stone, Tile::Wood, Tile::Leaves, Tile::Ore,
+        Tile::Plank, Tile::Sand, Tile::Sandstone, Tile::Snow, Tile::Ice, Tile::Cactus,
+        Tile::Mushroom, Tile::Herb, Tile::Ash, Tile::Hellstone, Tile::GrowingPlant, Tile::Water,
+    ];
+    let aw = NT * VARIANTS * 16;
+    let mut atlas = vec![[0u8; 4]; aw * 16];
+    for (ti, t) in tiles.iter().enumerate() {
+        for v in 0..VARIANTS {
+            let ox = (ti * VARIANTS + v) * 16;
+            let edge = if v >= crate::atlas::VARIANTS {
+                let m = v - crate::atlas::VARIANTS;
+                Some(Neighbours {
+                    up: m & 1 != 0, right: m & 2 != 0, down: m & 4 != 0, left: m & 8 != 0,
+                })
+            } else { None };
+            draw_tile(&mut atlas, aw, ox, *t, v % crate::atlas::VARIANTS, edge);
+        }
+    }
+    // upscale 4x and add padding between tiles
+    let scale = 4usize;
+    let pad = 2usize;
+    let cols = 6usize;
+    let rows = (NT * VARIANTS + cols - 1) / cols;
+    let cell = 16 * scale;
+    let w = cols * (cell + pad) + pad;
+    let h = rows * (cell + pad) + pad;
+    let mut out = vec![0u8; w * h * 4];
+    for row in 0..rows {
+        for col in 0..cols {
+            let idx = row * cols + col;
+            if idx >= NT * VARIANTS { continue; }
+            let sx = idx * 16;
+            let ox = pad + col * (cell + pad);
+            let oy = pad + row * (cell + pad);
+            for py in 0..cell {
+                for px in 0..cell {
+                    let src = atlas[(py / scale) * aw + sx + (px / scale)];
+                    let di = ((oy + py) * w + ox + px) * 4;
+                    out[di] = src[0]; out[di+1] = src[1]; out[di+2] = src[2]; out[di+3] = 255;
+                }
+            }
+        }
+    }
+    write_png(path, w as u32, h as u32, &out);
+    println!("wrote {} ({}x{}) tiles={} variants={}", path, w, h, NT, VARIANTS);
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--selftest" || a == "--headless") {
@@ -688,6 +741,12 @@ fn main() {
             }
             println!("x={:3} surface={:3} | {}", x, surf, col);
         }
+        return;
+    }
+
+    if let Some(pos) = args.iter().position(|a| a == "--dump-atlas") {
+        let path = args.get(pos + 1).cloned().unwrap_or_else(|| "atlas.png".to_string());
+        dump_atlas(&path);
         return;
     }
 

@@ -1,3 +1,4 @@
+use crate::atlas::{draw_tile, Neighbours, VARIANT_COUNT};
 use crate::util::{hash2, Tile, TILE};
 use crate::world::World;
 
@@ -8,31 +9,8 @@ pub struct Renderer {
     atlas: Vec<[u8; 4]>,
 }
 
-const VARIANTS: usize = 4;
+const VARIANTS: usize = VARIANT_COUNT;
 const ATLAS_TILES: usize = 17;
-
-fn palette(t: Tile) -> Option<([u8; 3], [u8; 3], [u8; 3])> {
-    match t {
-        Tile::Dirt => Some(([116, 78, 46], [86, 56, 32], [140, 96, 58])),
-        Tile::Grass => Some(([86, 140, 54], [58, 104, 36], [116, 170, 72])),
-        Tile::Stone => Some(([96, 96, 104], [70, 70, 78], [124, 124, 134])),
-        Tile::Wood => Some(([104, 74, 42], [76, 52, 28], [128, 94, 56])),
-        Tile::Leaves => Some(([58, 124, 48], [40, 92, 34], [82, 152, 66])),
-        Tile::Ore => Some(([96, 96, 104], [70, 70, 78], [196, 168, 74])),
-        Tile::Plank => Some(([150, 112, 66], [118, 86, 48], [176, 136, 84])),
-        Tile::Sand => Some(([198, 178, 116], [166, 146, 92], [222, 206, 148])),
-        Tile::Sandstone => Some(([172, 150, 104], [138, 118, 80], [198, 178, 130])),
-        Tile::Snow => Some(([226, 234, 244], [192, 204, 220], [244, 249, 255])),
-        Tile::Ice => Some(([152, 196, 232], [118, 164, 208], [186, 222, 248])),
-        Tile::Cactus => Some(([62, 122, 62], [44, 94, 44], [86, 150, 82])),
-        Tile::Mushroom => Some(([196, 88, 82], [150, 60, 58], [232, 132, 122])),
-        Tile::Herb => Some(([96, 158, 66], [70, 122, 46], [132, 192, 92])),
-        Tile::Ash => Some(([78, 68, 64], [56, 48, 46], [104, 92, 86])),
-        Tile::Hellstone => Some(([104, 44, 40], [72, 28, 26], [214, 96, 48])),
-        Tile::GrowingPlant => Some(([86, 152, 58], [62, 116, 42], [116, 184, 78])),
-        _ => None,
-    }
-}
 
 impl Renderer {
     pub fn new(width: i32, height: i32) -> Renderer {
@@ -65,54 +43,28 @@ impl Renderer {
             Tile::Ash,
             Tile::Hellstone,
             Tile::GrowingPlant,
+            Tile::Water,
         ];
         let tw = TILE as usize;
         let aw = ATLAS_TILES * VARIANTS * tw;
         self.atlas = vec![[0, 0, 0, 0]; aw * tw];
 
         for (ti, tile) in tiles.iter().enumerate() {
-            let (base, shade, hi) = match palette(*tile) {
-                Some(p) => p,
-                None => continue,
-            };
             for v in 0..VARIANTS {
                 let ox = (ti * VARIANTS + v) * tw;
-                for py in 0..tw {
-                    for px in 0..tw {
-                        let n = hash2((px + v * 31) as i32, (py + tile.index().unwrap_or(0) * 17) as i32, 1337);
-                        let n2 = hash2((px * 3 + v) as i32, (py * 5 + tile.index().unwrap_or(0)) as i32, 99);
-                        let c = if n > 0.86 {
-                            hi
-                        } else if n < 0.16 {
-                            shade
-                        } else {
-                            base
-                        };
-                        let j = (n2 - 0.5) * 18.0;
-                        let idx = (py * aw + ox + px) as usize;
-                        self.atlas[idx] = [
-                            (c[0] as f32 + j).clamp(0.0, 255.0) as u8,
-                            (c[1] as f32 + j).clamp(0.0, 255.0) as u8,
-                            (c[2] as f32 + j).clamp(0.0, 255.0) as u8,
-                            255,
-                        ];
-                    }
-                }
-                if *tile == Tile::Ore {
-                    for i in 0..7 {
-                        let ax = (hash2(i as i32, v as i32, 7) * 13.0) as i32 + 1;
-                        let ay = (hash2(i as i32, v as i32, 11) * 13.0) as i32 + 1;
-                        for dy in 0..2 {
-                            for dx in 0..2 {
-                                let x = ox as i32 + ax + dx;
-                                let y = ay + dy;
-                                if x < aw as i32 && y < tw as i32 {
-                                    self.atlas[(y as usize * aw) + x as usize] = [214, 186, 86, 255];
-                                }
-                            }
-                        }
-                    }
-                }
+                // 0..VARIANTS-16 are plain fills, the rest are edge variants
+                let edge = if v >= crate::atlas::VARIANTS {
+                    let m = v - crate::atlas::VARIANTS;
+                    Some(Neighbours {
+                        up: m & 1 != 0,
+                        right: m & 2 != 0,
+                        down: m & 4 != 0,
+                        left: m & 8 != 0,
+                    })
+                } else {
+                    None
+                };
+                draw_tile(&mut self.atlas, aw, ox, *tile, v % crate::atlas::VARIANTS, edge);
             }
         }
     }
@@ -378,7 +330,7 @@ impl Renderer {
                     continue;
                 }
 
-                let variant = (hash2(tx, ty, 4242) * VARIANTS as f32) as usize % VARIANTS;
+                let variant = self.pick_variant(world, tx, ty, tile);
                 self.blit_tile_scaled(tile, variant, sx, sy, zoom, [1.0, 1.0, 1.0]);
             }
         }
@@ -509,6 +461,33 @@ impl Renderer {
                 }
             }
         }
+    }
+
+    /// Edge-sensitive tiles get a variant chosen from which neighbours are
+    /// solid; everything else just picks a deterministic noise variant.
+    fn pick_variant(&self, world: &World, tx: i32, ty: i32, tile: Tile) -> usize {
+        let edge_sensitive = matches!(
+            tile,
+            Tile::Grass | Tile::Dirt | Tile::Stone | Tile::Sand | Tile::Snow | Tile::Ash
+        );
+        let plain = (hash2(tx, ty, 4242) * crate::atlas::VARIANTS as f32) as usize
+            % crate::atlas::VARIANTS;
+        if !edge_sensitive {
+            return plain;
+        }
+        let n = Neighbours {
+            up: world.get(tx, ty - 1).solid(),
+            down: world.get(tx, ty + 1).solid(),
+            left: world.get(tx - 1, ty).solid(),
+            right: world.get(tx + 1, ty).solid(),
+        };
+        let m = n.mask();
+        // Only use an edge variant when it actually differs from plain fill,
+        // otherwise prefer the textured plain tile.
+        if m == 0 {
+            return plain;
+        }
+        crate::atlas::VARIANTS + m
     }
 
     fn blit_tile_scaled(&mut self, tile: Tile, variant: usize, dx: i32, dy: i32, zoom: f32, tint: [f32; 3]) {

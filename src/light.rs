@@ -93,9 +93,15 @@ impl Lighting {
                 }
                 let s = sky * (1.0 - atten).max(0.0);
                 if y >= y0 && s > 0.0 {
-                    self.take_max(i, s * 0.56, s * 0.68, s);
+                    // Sunlight is near-neutral at noon; only the deep falloff
+                    // picks up a cool tint, so tiles keep their own colour.
+                    let warm = s.min(1.0);
+                    let r = s * (0.86 + 0.14 * warm);
+                    let g = s * (0.88 + 0.12 * warm);
+                    let b = s * (0.80 + 0.20 * warm);
+                    self.take_max(i, r, g, b);
                     if s > 0.02 {
-                        self.push(i as u32, s * 0.56, s * 0.68, s);
+                        self.push(i as u32, r, g, b);
                     }
                 }
             }
