@@ -1,15 +1,51 @@
+mod entities;
 mod light;
 mod player;
 mod render;
 mod util;
 mod world;
 
+use entities::{aabb, spark_particles, tile_particles, Enemy, Particle, Spawner};
 use light::{Lighting, TorchLight};
 use player::{Input, Player};
 use render::Renderer;
 use util::{Rgb, Tile};
 
 const REACH: f32 = 6.0;
+const ATTACK_RANGE: f32 = 46.0;
+
+#[derive(Default)]
+struct Inventory {
+    dirt: i32,
+    stone: i32,
+    wood: i32,
+    sand: i32,
+    snow: i32,
+    ore: i32,
+    hellstone: i32,
+    gems: i32,
+}
+
+impl Inventory {
+    fn add(&mut self, t: Tile) {
+        match t {
+            Tile::Dirt | Tile::Grass => self.dirt += 1,
+            Tile::Stone | Tile::Sandstone | Tile::Ash => self.stone += 1,
+            Tile::Wood | Tile::Plank | Tile::Cactus => self.wood += 1,
+            Tile::Sand => self.sand += 1,
+            Tile::Snow | Tile::Ice => self.snow += 1,
+            Tile::Ore => {
+                self.ore += 1;
+                if self.ore % 3 == 0 {
+                    self.gems += 1;
+                }
+            }
+            Tile::Hellstone => self.hellstone += 1,
+            _ => {}
+        }
+    }
+
+}
 
 struct Game {
     world: world::World,
@@ -20,6 +56,21 @@ struct Game {
     zoom: f32,
     mining: (i32, i32, f32),
     sky: f32,
+    clock: f32,
+    day: f32,
+    sun_x: f32,
+    enemies: Vec<Enemy>,
+    particles: Vec<Particle>,
+    spawner: Spawner,
+    inv: Inventory,
+    hp: f32,
+    max_hp: f32,
+    invuln: f32,
+    attack_cd: f32,
+    swing: f32,
+    kills: i32,
+    rng: util::Rng,
+    game_over: f32,
 }
 
 impl Game {
@@ -42,6 +93,21 @@ impl Game {
             zoom,
             mining: (-1, -1, 0.0),
             sky: 1.0,
+            clock: 0.28,
+            day: 1.0,
+            sun_x: 0.5,
+            enemies: Vec::new(),
+            particles: Vec::new(),
+            spawner: Spawner::new(seed),
+            inv: Inventory::default(),
+            hp: 100.0,
+            max_hp: 100.0,
+            invuln: 0.0,
+            attack_cd: 0.0,
+            swing: 0.0,
+            kills: 0,
+            rng: util::Rng::new(seed ^ 0x5eed),
+            game_over: 0.0,
         };
         g.place_starter_torches();
         g.center_camera();
@@ -101,6 +167,12 @@ impl Game {
     }
 
     fn update(&mut self, dt: f32, input: &Input) {
+        // Full day cycle = 6 minutes.
+        self.clock = (self.clock + dt / 360.0) % 1.0;
+        // day: 1 at noon, 0 at midnight
+        let ang = (self.clock - 0.25) * std::f32::consts::TAU;
+        self.day = (ang.sin() * 0.5 + 0.5).clamp(0.0, 1.0);
+        self.sun_x = self.clock;
         self.player.update(dt, input, &self.world);
 
         let vw = self.renderer.width as f32 / self.zoom;
@@ -115,7 +187,137 @@ impl Game {
 
         let surface = self.world.column_height((self.player.cx() / 16.0) as i32);
         let depth = (self.player.cy() / 16.0) as i32 - surface;
-        self.sky = (1.0 - depth as f32 * 0.018).clamp(0.12, 1.0);
+        // Depth dims you; time of day sets the ceiling on how bright the sky is.
+        let daylight = 0.10 + self.day * 0.90;
+        self.sky = ((1.0 - depth as f32 * 0.010).clamp(0.08, 1.0)) * daylight;
+
+        self.invuln = (self.invuln - dt).max(0.0);
+        self.attack_cd = (self.attack_cd - dt).max(0.0);
+        self.swing = (self.swing - dt).max(0.0);
+
+        // ---- enemy spawning -------------------------------------------
+        let night = 1.0 - self.day;
+        if self.hp > 0.0 {
+            let view = (vw, vh);
+            if let Some(e) = self.spawner.try_spawn(dt, &self.world, self.cam, view, night) {
+                self.enemies.push(e);
+            }
+        }
+
+        // ---- enemy simulation -----------------------------------------
+        let target = (self.player.cx(), self.player.cy());
+        let mut rng = std::mem::take(&mut self.rng);
+        self.enemies.retain(|_| true);
+        for e in self.enemies.iter_mut() {
+            e.update(dt, &self.world, target, &mut rng);
+        }
+        self.rng = rng;
+
+        // ---- contact damage -------------------------------------------
+        for e in self.enemies.iter() {
+            if aabb(
+                self.player.x,
+                self.player.y,
+                player::PLAYER_W,
+                player::PLAYER_H,
+                e.x,
+                e.y,
+                e.w(),
+                e.h(),
+            ) {
+                if self.invuln <= 0.0 && self.hp > 0.0 {
+                    self.hp -= e.kind.damage() as f32;
+                    self.invuln = 0.75;
+                    let knock = if self.player.cx() < e.x + e.w() * 0.5 {
+                        -1.0
+                    } else {
+                        1.0
+                    };
+                    self.player.vx = knock * 180.0;
+                    self.player.vy = -140.0;
+                    let mut rng = std::mem::take(&mut self.rng);
+                    spark_particles(&mut self.particles, &mut rng, self.player.cx(), self.player.cy(), [220, 70, 70]);
+                    self.rng = rng;
+                    if self.hp <= 0.0 {
+                        self.hp = 0.0;
+                        self.game_over = 2.5;
+                    }
+                }
+            }
+        }
+
+        // ---- particles ------------------------------------------------
+        let world = &self.world;
+        for p in self.particles.iter_mut() {
+            p.update(dt, world);
+        }
+        self.particles.retain(|p| p.life > 0.0);
+
+        self.enemies.retain(|e| {
+            e.hp > 0
+                && e.x > self.cam.0 - 900.0
+                && e.x < self.cam.0 + vw + 900.0
+                && e.y < self.world.h as f32 * 16.0
+        });
+        if self.enemies.len() > 90 {
+            self.enemies.drain(0..(self.enemies.len() - 90));
+        }
+
+        if self.game_over > 0.0 {
+            self.game_over -= dt;
+            if self.game_over <= 0.0 {
+                self.respawn();
+            }
+        }
+    }
+
+    fn width_scale(&self) -> i32 {
+        (self.renderer.width / 200).max(2)
+    }
+
+    fn attack(&mut self) {
+        if self.attack_cd > 0.0 || self.hp <= 0.0 {
+            return;
+        }
+        self.attack_cd = 0.34;
+        self.swing = 0.18;
+        let reach = ATTACK_RANGE;
+        let px = self.player.cx();
+        let py = self.player.cy();
+        let facing = self.player.facing as f32;
+
+        let mut rng = std::mem::take(&mut self.rng);
+        let mut killed = 0;
+        for e in self.enemies.iter_mut() {
+            let ex = e.x + e.w() * 0.5;
+            let ey = e.y + e.h() * 0.5;
+            let dx = ex - px;
+            let dy = ey - py;
+            let ahead = if facing > 0.0 { dx > -6.0 } else { dx < 6.0 };
+            if ahead && dx.abs() < reach && dy.abs() < 30.0 {
+                let dmg = 9;
+                if e.hit(dmg, px) {
+                    killed += 1;
+                    spark_particles(&mut self.particles, &mut rng, ex, ey, [240, 220, 120]);
+                } else {
+                    spark_particles(&mut self.particles, &mut rng, ex, ey, [220, 150, 90]);
+                }
+            }
+        }
+        self.rng = rng;
+        self.kills += killed;
+    }
+
+    fn respawn(&mut self) {
+        let (sx, sy) = self.world.spawn_point();
+        self.player.x = sx - 6.0;
+        self.player.y = sy - 44.0;
+        self.player.vx = 0.0;
+        self.player.vy = 0.0;
+        self.hp = self.max_hp;
+        self.invuln = 1.5;
+        self.enemies.clear();
+        self.particles.clear();
     }
 
     fn mine(&mut self, tx: i32, ty: i32, dt: f32) {
@@ -129,18 +331,33 @@ impl Game {
         if cur == Tile::Air {
             return;
         }
+        if !cur.breakable() {
+            return;
+        }
         if self.mining.0 != tx || self.mining.1 != ty {
             self.mining = (tx, ty, 0.0);
         }
-        let hardness = match cur {
-            Tile::Stone => 1.35,
-            Tile::Ore => 1.8,
-            _ => 0.55,
-        };
-        self.mining.2 += dt / hardness;
+        self.mining.2 += dt / cur.hardness().max(0.05);
+        // chipping particles while digging
+        if self.mining.2 > 0.05 && (self.mining.2 * 26.0) as i32 % 3 == 0 {
+            let mut rng = std::mem::take(&mut self.rng);
+            tile_particles(&mut self.particles, &mut rng, tx, ty, cur, 2);
+            self.rng = rng;
+        }
         if self.mining.2 >= 1.0 {
             self.world.set(tx, ty, Tile::Air);
+            self.inv.add(cur);
+            let mut rng = std::mem::take(&mut self.rng);
+            tile_particles(&mut self.particles, &mut rng, tx, ty, cur, 10);
+            self.rng = rng;
             self.mining = (-1, -1, 0.0);
+            // support check: floating vegetation above falls
+            for dy in 1..4 {
+                let a = self.world.get(tx, ty - dy);
+                if a == Tile::Leaves || a == Tile::Cactus || a == Tile::GrowingPlant {
+                    self.world.set(tx, ty - dy, Tile::Air);
+                }
+            }
         }
     }
 
@@ -179,13 +396,44 @@ impl Game {
         );
 
         self.renderer.clear([0, 0, 0, 255]);
-        self.renderer.draw_sky(&self.world, self.cam.0, self.cam.1, self.zoom);
         self.renderer
-            .draw_world(&self.world, self.cam.0, self.cam.1, self.zoom);
+            .draw_sky(&self.world, self.cam.0, self.cam.1, self.zoom, self.day, self.sun_x);
+        self.renderer
+            .draw_world(&self.world, self.cam.0, self.cam.1, self.zoom, self.clock * 360.0);
         self.renderer
             .composite_light(&self.lighting, &self.world, self.cam.0, self.cam.1, self.zoom, &torches);
         self.renderer
-            .draw_player(&self.player, self.cam.0, self.cam.1, self.zoom);
+            .draw_enemies(&self.enemies, self.cam.0, self.cam.1, self.zoom);
+        if self.invuln > 0.0 && (self.invuln * 12.0) as i32 % 2 == 0 {
+            // blink while invulnerable
+        } else {
+            self.renderer
+                .draw_player(&self.player, self.cam.0, self.cam.1, self.zoom);
+        }
+        self.renderer
+            .draw_swing(&self.player, self.cam.0, self.cam.1, self.zoom, self.swing);
+        self.renderer
+            .draw_particles(&self.particles, self.cam.0, self.cam.1, self.zoom);
+
+        let biome = self
+            .world
+            .biome_at((self.player.cx() / 16.0) as i32)
+            .name();
+        self.renderer.draw_hud(
+            self.hp,
+            self.max_hp,
+            self.kills,
+            &self.inv,
+            self.clock,
+            biome,
+            0.0,
+        );
+
+        if self.game_over > 0.0 {
+            self.renderer
+                .draw_center_text("YOU DIED", [220, 70, 70], self.width_scale());
+        }
+
         if let Some((tx, ty)) = selected {
             let mining = if self.mining.0 == tx && self.mining.1 == ty {
                 self.mining.2
@@ -202,14 +450,14 @@ fn selftest() {
     println!("nerthus selftest");
     let world = world::World::new(420, 300, 424242);
     let counts = world.tile_counts();
-    let names = [
-        "air", "dirt", "grass", "stone", "wood", "leaves", "ore", "torch", "plank",
-    ];
     let total: usize = counts.iter().sum();
     for (i, c) in counts.iter().enumerate() {
+        if *c == 0 {
+            continue;
+        }
         println!(
-            "  {:6} {:8} ({:.2}%)",
-            names[i],
+            "  {:12} {:8} ({:.2}%)",
+            Tile::from_u8(i as u8).name(),
             c,
             *c as f32 / total as f32 * 100.0
         );
@@ -233,6 +481,24 @@ fn selftest() {
         }
     }
     assert_eq!(dead, 0, "columns with no ground");
+    println!("  biomes: {:?}", world.biome_counts());
+    {
+        let mut spans: Vec<(String, i32, i32)> = Vec::new();
+        let mut cur = world.biome_at(0);
+        let mut start = 0;
+        for x in 1..world.w {
+            let b = world.biome_at(x);
+            if b != cur {
+                spans.push((cur.name().to_string(), start, x - 1));
+                cur = b;
+                start = x;
+            }
+        }
+        spans.push((cur.name().to_string(), start, world.w - 1));
+        for (n, a, b) in spans.iter().filter(|(_, a, b)| b - a > 12) {
+            println!("   biome {}: x={}..{}", n, a, b);
+        }
+    }
     println!("  worldgen: deterministic, seed-sensitive, no dead columns");
 
     let mut lighting = Lighting::new(&world);
@@ -284,8 +550,8 @@ fn selftest() {
     let mut renderer = Renderer::new(1280, 800);
     let t1 = std::time::Instant::now();
     for _ in 0..10 {
-        renderer.draw_sky(&world, 3200.0, 1400.0, 2.0);
-        renderer.draw_world(&world, 3200.0, 1400.0, 2.0);
+        renderer.draw_sky(&world, 3200.0, 1400.0, 2.0, 1.0, 0.5);
+        renderer.draw_world(&world, 3200.0, 1400.0, 2.0, 0.0);
         renderer.composite_light(&lighting, &world, 3200.0, 1400.0, 2.0, &torches);
         renderer.draw_player(&player, 3200.0, 1400.0, 2.0);
         renderer.draw_selection(10, 10, 3200.0, 1400.0, 2.0, 0.5);
@@ -358,14 +624,28 @@ fn write_png(path: &str, w: u32, h: u32, rgba: &[u8]) {
     std::fs::write(path, png).expect("write png");
 }
 
-fn dump_frame(seed: u32, path: &str) {
+fn dump_frame(seed: u32, path: &str, clock: Option<f32>, at_x: Option<f32>) {
     let out_w = 1280;
     let out_h = 800;
     let mut game = Game::new(out_w, out_h, seed);
-    for _ in 0..240 {
+    if let Some(c) = clock {
+        game.clock = c;
+    }
+    for _ in 0..900 {
         game.update(1.0 / 60.0, &Input::default());
     }
-    game.center_camera();
+    if let Some(c) = clock {
+        game.clock = c;
+        let ang = (c - 0.25) * std::f32::consts::TAU;
+        game.day = (ang.sin() * 0.5 + 0.5).clamp(0.0, 1.0);
+        game.sun_x = c;
+    }
+    if let Some(x) = at_x {
+        let vw = game.renderer.width as f32 / game.zoom;
+        game.cam.0 = (x * 16.0 - vw * 0.5).clamp(0.0, game.world.w as f32 * 16.0 - vw);
+    } else {
+        game.center_camera();
+    }
     game.render((0, 0), None);
     let (iw, ih) = (game.renderer.width as u32, game.renderer.height as u32);
     write_png(path, iw, ih, game.renderer.framebuffer());
@@ -385,7 +665,29 @@ fn main() {
 
     if let Some(pos) = args.iter().position(|a| a == "--dump-frame") {
         let path = args.get(pos + 1).cloned().unwrap_or_else(|| "frame.png".to_string());
-        dump_frame(seed_arg.unwrap_or(424242), &path);
+        let clock = args
+            .iter()
+            .find_map(|a| a.strip_prefix("--clock=").and_then(|v| v.parse::<f32>().ok()));
+        let at_x = args
+            .iter()
+            .find_map(|a| a.strip_prefix("--at=").and_then(|v| v.parse::<f32>().ok()));
+        dump_frame(seed_arg.unwrap_or(424242), &path, clock, at_x);
+        return;
+    }
+
+    if let Some(pos) = args.iter().position(|a| a == "--probe") {
+        let g = Game::new(1280, 800, seed_arg.unwrap_or(424242));
+        let cols: Vec<i32> = args.get(pos + 1)
+            .map(|v| v.split(',').filter_map(|n| n.parse::<i32>().ok()).collect())
+            .unwrap_or_default();
+        for x in cols {
+            let surf = g.world.column_height(x);
+            let mut col = String::new();
+            for y in (surf - 3)..(surf + 6) {
+                col.push_str(&format!("{} ", g.world.get(x, y).name()));
+            }
+            println!("x={:3} surface={:3} | {}", x, surf, col);
+        }
         return;
     }
 
@@ -427,8 +729,10 @@ fn main() {
     let mut event_pump = sdl.event_pump().expect("event pump");
     let mut input = Input::default();
     let mut mouse_down = false;
+    let mut right_down = false;
     let mut mouse = (0, 0);
     let mut shift = false;
+    let mut input_attack = false;
     let mut last = std::time::Instant::now();
     let (scale_x, scale_y) = (
         out_w as f32 / game.renderer.width as f32,
@@ -450,6 +754,7 @@ fn main() {
                     Keycode::D | Keycode::Right => input.right = true,
                     Keycode::W | Keycode::Up | Keycode::Space => input.jump = true,
                     Keycode::LShift | Keycode::RShift => shift = true,
+                    Keycode::J | Keycode::F | Keycode::C => input_attack = true,
                     _ => {}
                 },
                 Event::KeyUp {
@@ -459,22 +764,28 @@ fn main() {
                     Keycode::D | Keycode::Right => input.right = false,
                     Keycode::W | Keycode::Up | Keycode::Space => input.jump = false,
                     Keycode::LShift | Keycode::RShift => shift = false,
+                    Keycode::J | Keycode::F | Keycode::C => input_attack = false,
                     _ => {}
                 },
                 Event::MouseMotion { x, y, .. } => mouse = (x, y),
                 Event::MouseButtonDown {
-                    mouse_btn: MouseButton::Left,
+                    mouse_btn,
                     x,
                     y,
                     ..
                 } => {
                     mouse = (x, y);
-                    mouse_down = true;
+                    match mouse_btn {
+                        MouseButton::Left => mouse_down = true,
+                        MouseButton::Right => right_down = true,
+                        _ => {}
+                    }
                 }
-                Event::MouseButtonUp {
-                    mouse_btn: MouseButton::Left,
-                    ..
-                } => mouse_down = false,
+                Event::MouseButtonUp { mouse_btn, .. } => match mouse_btn {
+                    MouseButton::Left => mouse_down = false,
+                    MouseButton::Right => right_down = false,
+                    _ => {}
+                },
                 _ => {}
             }
         }
@@ -494,6 +805,9 @@ fn main() {
         let in_bounds = tx >= 0 && ty >= 0 && tx < game.world.w && ty < game.world.h;
 
         game.update(dt, &input);
+        if right_down || input_attack {
+            game.attack();
+        }
         if mouse_down && in_bounds {
             if shift {
                 game.place(tx, ty);

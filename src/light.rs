@@ -1,8 +1,8 @@
 use crate::util::Rgb;
 use crate::world::World;
 
-const ATT_OPEN: f32 = 0.055;
-const ATT_SOLID: f32 = 0.34;
+const ATT_OPEN: f32 = 0.045;
+const ATT_SOLID: f32 = 0.22;
 const MAX_LEVELS: usize = 96;
 
 #[derive(Clone, Copy)]
@@ -89,7 +89,7 @@ impl Lighting {
             for y in 0..=y1 {
                 let i = (y * w + x) as usize;
                 if world.tiles[i] != 0 && crate::util::Tile::from_u8(world.tiles[i]).solid() {
-                    atten = (atten + 0.42).min(1.0);
+                    atten = (atten + 0.16).min(1.0);
                 }
                 let s = sky * (1.0 - atten).max(0.0);
                 if y >= y0 && s > 0.0 {
