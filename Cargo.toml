@@ -6,7 +6,7 @@ description = "Cross-platform 2D tile sandbox engine"
 license = "MIT"
 
 [dependencies]
-sdl2 = { version = "0.37", features = ["bundled", "static-link"] }
+sdl2 = { version = "0.38", features = ["bundled", "static-link"] }
 
 [[bin]]
 name = "nerthus"

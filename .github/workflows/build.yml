@@ -9,6 +9,10 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # The vendored SDL2 CMakeLists declares cmake_minimum_required(VERSION 3.0.0).
+  # CMake 4 removed compatibility with < 3.5, so runners with CMake 4 fail to
+  # configure. This restores the compatibility policy. Harmless on CMake 3.x.
+  CMAKE_POLICY_VERSION_MINIMUM: '3.5'
 
 jobs:
   build:
