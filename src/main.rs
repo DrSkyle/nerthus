@@ -199,7 +199,7 @@ impl Game {
 }
 
 fn selftest() {
-    println!("tilefall selftest");
+    println!("nerthus selftest");
     let world = world::World::new(420, 300, 424242);
     let counts = world.tile_counts();
     let names = [
@@ -394,7 +394,7 @@ fn main() {
     let out_w = 1280;
     let out_h = 800;
     let window = video
-        .window("Tilefall", out_w as u32, out_h as u32)
+        .window("Nerthus", out_w as u32, out_h as u32)
         .position_centered()
         .build()
         .expect("window failed");
@@ -412,7 +412,7 @@ fn main() {
         ^ 0x9e3779b9
     });
 
-    println!("Tilefall — seed {} (rerun with --seed={} to reproduce)", seed, seed);
+    println!("Nerthus — seed {} (rerun with --seed={} to reproduce)", seed, seed);
     let mut game = Game::new(out_w, out_h, seed);
 
     let tex_creator = canvas.texture_creator();

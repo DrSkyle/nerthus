@@ -1,4 +1,4 @@
-# Tilefall (Rust)
+# Nerthus
 
 Native cross-platform build of a 2D tile sandbox engine — worldgen, pixel lighting, AABB
 physics, mining/building. Rust + SDL2, one codebase, no OS-specific code.
@@ -8,21 +8,42 @@ released artifacts need no runtime dependencies.
 
 ## Downloads
 
-Prebuilt binaries are produced by GitHub Actions on native runners for each OS:
+Prebuilt binaries are produced by GitHub Actions on **native runners** for each platform —
+nothing is emulated or cross-compiled, so each artifact is built and self-tested on real
+hardware:
 
 | Platform | Artifact |
 | --- | --- |
-| macOS (Intel + Apple Silicon) | `tilefall-macos` |
-| Windows x86_64 | `tilefall-windows-x86_64.exe` |
-| Linux x86_64 | `tilefall-linux-x86_64` |
+| macOS (Universal: Intel + Apple Silicon) | `nerthus-macos-universal` and `nerthus-macos-universal.app.zip` |
+| Windows x86_64 | `nerthus-windows-x86_64` |
+| Linux x86_64 | `nerthus-linux-x86_64` |
+| Linux ARM64 | `nerthus-linux-arm64` |
 
-Grab them from the **Actions** tab (latest `build` run) or from **Releases** if a `v*` tag was
-pushed. On macOS the first launch may need:
+Every artifact ships with:
+- the binary (SDL2 statically linked — no runtime deps)
+- `*-frame.png` — a reference frame rendered by that exact binary
+- `*-README.md`
+- `*.sha256` checksum
+
+Grab them from the **Actions** tab (latest `build` run) or from **Releases** if a `v*` tag
+was pushed.
+
+### macOS
+
+Double-click `Nerthus.app` after unzipping. Because the build is ad-hoc signed and not
+notarized, Gatekeeper may still object; either right-click → Open, or:
 
 ```sh
-chmod +x tilefall-macos
-xattr -d com.apple.quarantine tilefall-macos   # if Gatekeeper objects to an unsigned build
+xattr -dr com.apple.quarantine Nerthus.app
 ```
+
+Prefer the raw binary? `nerthus-macos-universal` runs directly and is a real universal
+Mach-O (`lipo`-merged from both slices).
+
+### Windows
+
+Run `nerthus-windows-x86_64.exe`. If SmartScreen warns, choose *More info → Run anyway* — the
+binary is unsigned.
 
 ## Run from source
 
@@ -93,4 +114,4 @@ For reference the same scene cost ~9 ms/frame before these changes.
 signed `i32` arithmetic silently produces a completely different world — it showed up as 0%
 ore and 71% stone instead of ~7% and ~45%.
 
-![frame](screenshots/tilefall.png)
+![frame](screenshots/nerthus.png)

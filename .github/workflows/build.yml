@@ -3,8 +3,12 @@ name: build
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
   build:
@@ -16,21 +20,37 @@ jobs:
         include:
           - os: ubuntu-latest
             name: linux-x86_64
-            artifact: tilefall-linux-x86_64
-            binary: tilefall
+            artifact: nerthus-linux-x86_64
+            out: nerthus
+          - os: ubuntu-24.04-arm
+            name: linux-arm64
+            artifact: nerthus-linux-arm64
+            out: nerthus
           - os: macos-latest
             name: macos-universal
-            artifact: tilefall-macos
-            binary: tilefall
+            artifact: nerthus-macos-universal
+            out: nerthus
           - os: windows-latest
             name: windows-x86_64
-            artifact: tilefall-windows-x86_64
-            binary: tilefall.exe
+            artifact: nerthus-windows-x86_64
+            out: nerthus.exe
+            ext: .exe
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.name == 'macos-universal' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.name }}-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install Linux build deps
         if: runner.os == 'Linux'
@@ -38,30 +58,59 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake build-essential
 
+      # SDL2 is vendored (bundled feature) so no system SDL install is needed anywhere.
       - name: Build
+        if: matrix.name != 'macos-universal'
         run: cargo build --release --locked
 
-      # Assert the engine is correct before publishing anything.
+      # Real universal binary: build both slices, then lipo them together.
+      - name: Build (macOS universal)
+        if: matrix.name == 'macos-universal'
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+          lipo -create \
+            target/aarch64-apple-darwin/release/nerthus \
+            target/x86_64-apple-darwin/release/nerthus \
+            -output target/release/nerthus
+          lipo -info target/release/nerthus
+
+      # Never publish a binary whose engine is not verified.
       - name: Selftest
-        run: ./target/release/tilefall --selftest
+        run: ./target/release/${{ matrix.out }} --selftest
 
       - name: Render reference frame
-        run: ./target/release/tilefall --dump-frame frame.png --seed=424242
+        run: ./target/release/${{ matrix.out }} --dump-frame frame.png --seed=424242
 
       - name: Package
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p dist
-          name="${{ matrix.artifact }}"
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            cp "target/release/${{ matrix.binary }}" "dist/$name.exe"
-            cp frame.png "dist/$name-frame.png"
+          name="${{ matrix.artifact }}${{ matrix.ext }}"
+          cp "target/release/${{ matrix.out }}" "dist/$name"
+          chmod +x "dist/$name" || true
+          cp frame.png "dist/$name-frame.png"
+          cp README.md "dist/$name-README.md"
+          cd dist
+          if command -v shasum >/dev/null; then
+            shasum -a 256 "$name" > "$name.sha256"
           else
-            cp "target/release/${{ matrix.binary }}" "dist/$name"
-            chmod +x "dist/$name"
-            cp frame.png "dist/$name-frame.png"
+            sha256sum "$name" > "$name.sha256"
           fi
-          cp README.md "dist/$name-README.md" || true
+          ls -la
+
+      # macOS: also ship a real double-clickable .app bundle.
+      - name: Build macOS .app bundle
+        if: matrix.name == 'macos-universal'
+        run: |
+          set -euo pipefail
+          bash packaging/make-macos-app.sh target/release/nerthus dist
+          cd dist
+          zip -qry nerthus-macos-universal.app.zip Nerthus.app
+          rm -rf Nerthus.app
+          ls -la
 
       - uses: actions/upload-artifact@v4
         with:

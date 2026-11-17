@@ -1,5 +1,5 @@
 [package]
-name = "tilefall"
+name = "nerthus"
 version = "0.1.0"
 edition = "2021"
 description = "Cross-platform 2D tile sandbox engine"
@@ -9,7 +9,7 @@ license = "MIT"
 sdl2 = { version = "0.37", features = ["bundled", "static-link"] }
 
 [[bin]]
-name = "tilefall"
+name = "nerthus"
 path = "src/main.rs"
 
 [profile.release]

@@ -52,6 +52,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
+name = "nerthus"
+version = "0.1.0"
+dependencies = [
+ "sdl2",
+]
+
+[[package]]
 name = "sdl2"
 version = "0.37.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -80,13 +87,6 @@ name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
-
-[[package]]
-name = "tilefall"
-version = "0.1.0"
-dependencies = [
- "sdl2",
-]
 
 [[package]]
 name = "version-compare"
