@@ -1,0 +1,4 @@
+/target
+/screenshots/*.png
+/frame*.png
+dist/

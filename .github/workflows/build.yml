@@ -1,0 +1,94 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux-x86_64
+            artifact: tilefall-linux-x86_64
+            binary: tilefall
+          - os: macos-latest
+            name: macos-universal
+            artifact: tilefall-macos
+            binary: tilefall
+          - os: windows-latest
+            name: windows-x86_64
+            artifact: tilefall-windows-x86_64
+            binary: tilefall.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
+
+      - name: Build
+        run: cargo build --release --locked
+
+      # Assert the engine is correct before publishing anything.
+      - name: Selftest
+        run: ./target/release/tilefall --selftest
+
+      - name: Render reference frame
+        run: ./target/release/tilefall --dump-frame frame.png --seed=424242
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist
+          name="${{ matrix.artifact }}"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp "target/release/${{ matrix.binary }}" "dist/$name.exe"
+            cp frame.png "dist/$name-frame.png"
+          else
+            cp "target/release/${{ matrix.binary }}" "dist/$name"
+            chmod +x "dist/$name"
+            cp frame.png "dist/$name-frame.png"
+          fi
+          cp README.md "dist/$name-README.md" || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: attach binaries to release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten
+        shell: bash
+        run: |
+          mkdir -p out
+          find artifacts -type f -exec cp {} out/ \;
+          ls -la out
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
+          generate_release_notes: true
